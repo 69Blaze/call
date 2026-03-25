@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="cs">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Audio Chat & Screen Share</title>
+    <script src="https://unpkg.com/peerjs@1.5.2/dist/peerjs.min.js"></script>
+    <style>
+        :root {
+            --bg: #f0f2f5; --card: white; --text: #333; --accent: #007bff;
+        }
+        body.dark-mode {
+            --bg: #18191a; --card: #242526; --text: #e4e6eb; --accent: #3a3b3c;
+        }
+        body { font-family: sans-serif; background: var(--bg); color: var(--text); display: flex; flex-direction: column; align-items: center; transition: 0.3s; margin: 0; padding: 20px; }
+        #setup, #room { background: var(--card); padding: 25px; border-radius: 12px; box-shadow: 0 4px 15px rgba(0,0,0,0.2); text-align: center; width: 90%; max-width: 450px; }
+        .hidden { display: none; }
+        input { padding: 12px; border: 1px solid #ccc; border-radius: 8px; margin-bottom: 15px; width: 100%; box-sizing: border-box; background: var(--bg); color: var(--text); }
+        button { padding: 12px 20px; cursor: pointer; border: none; border-radius: 8px; background: #007bff; color: white; font-weight: bold; width: 100%; margin-bottom: 10px; transition: 0.2s; }
+        button:hover { opacity: 0.9; }
+        #remoteVideo { width: 100%; border-radius: 8px; background: #000; margin-top: 15px; display: none; }
+        #remoteVideo.active { display: block; }
+        .user-badge { background: var(--accent); padding: 5px 10px; border-radius: 20px; font-size: 0.9em; margin: 5px; display: inline-block; }
+        .theme-toggle { position: absolute; top: 20px; right: 20px; cursor: pointer; font-size: 1.5rem; }
+        .room-id-box { font-size: 1.2em; font-weight: bold; color: #28a745; cursor: pointer; margin: 10px 0; border: 2px dashed #28a745; padding: 10px; border-radius: 8px; }
+    </style>
+</head>
+<body>
+
+    <div class="theme-toggle" onclick="toggleTheme()">🌓</div>
+
+    <div id="setup">
+        <h1>Vítejte</h1>
+        <input type="text" id="userName" placeholder="Zadejte své jméno">
+        <hr style="margin: 20px 0; opacity: 0.2;">
+        <button onclick="startSession('create')" style="background: #28a745;">Vytvořit místnost</button>
+        <p>nebo</p>
+        <input type="text" id="joinId" placeholder="Kód místnosti (6 znaků)">
+        <button onclick="startSession('join')">Připojit se</button>
+    </div>
+
+    <div id="room" class="hidden">
+        <div class="room-id-box" id="displayId" onclick="copyId()" title="Klikni pro kopírování"></div>
+        <p style="font-size: 0.8em; opacity: 0.7;">(Klikni na kód pro zkopírování)</p>
+        
+        <div id="userList">
+            <strong>V místnosti:</strong><br>
+            <div id="participants"></div>
+        </div>
+
+        <video id="remoteVideo" autoplay playsinline></video>
+        
+        <div style="margin-top: 20px;">
+            <button onclick="toggleScreenShare()" id="shareBtn" style="background: #6f42c1;">Sdílet obrazovku</button>
+            <button onclick="location.reload()" style="background: #dc3545;">Opustit</button>
+        </div>
+    </div>
+
+    <script>
+        let peer;
+        let localStream;
+        let myName = "";
+        let currentCall;
+
+        function toggleTheme() {
+            document.body.classList.toggle('dark-mode');
+        }
+
+        function copyId() {
+            const id = document.getElementById('displayId').innerText;
+            navigator.clipboard.writeText(id);
+            alert("Kód zkopírován!");
+        }
+
+        async function startSession(type) {
+            myName = document.getElementById('userName').value.trim();
+            if (!myName) return alert("Nejdřív zadej své jméno!");
+
+            if (type === 'create') {
+                const id = Math.random().toString(36).substring(2, 8);
+                initPeer(id);
+            } else {
+                const id = document.getElementById('joinId').value.trim();
+                if (id.length !== 6) return alert("Zadej platný kód!");
+                initPeer(Math.random().toString(36).substring(2, 8), id);
+            }
+        }
+
+        function initPeer(myId, targetId = null) {
+            // metadata posíláme jméno při spojení
+            peer = new Peer(myId, { debug: 1 });
+
+            peer.on('open', async (id) => {
+                document.getElementById('setup').classList.add('hidden');
+                document.getElementById('room').classList.remove('hidden');
+                document.getElementById('displayId').innerText = targetId || id;
+                addParticipant(myName);
+
+                // Získání pouze AUDIA
+                localStream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+
+                if (targetId) {
+                    // Voláme s metadaty o našem jménu
+                    const call = peer.call(targetId, localStream, { metadata: { name: myName } });
+                    handleCall(call);
+                }
+            });
+
+            peer.on('call', (call) => {
+                // Přijetí hovoru a zobrazení jména volajícího
+                const callerName = call.metadata.name || "Host";
+                addParticipant(callerName);
+                call.answer(localStream);
+                handleCall(call);
+            });
+        }
+
+        function handleCall(call) {
+            currentCall = call;
+            const remoteVid = document.getElementById('remoteVideo');
+
+            call.on('stream', (remoteStream) => {
+                // Pokud stream obsahuje video (sdílení obrazovky), ukaž okno
+                if (remoteStream.getVideoTracks().length > 0) {
+                    remoteVid.srcObject = remoteStream;
+                    remoteVid.classList.add('active');
+                }
+                // Audio hraje na pozadí automaticky přes stream
+                const audio = new Audio();
+                audio.srcObject = remoteStream;
+                audio.play();
+            });
+        }
+
+        async function toggleScreenShare() {
+            try {
+                const screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true });
+                const videoTrack = screenStream.getVideoTracks()[0];
+                
+                if (currentCall) {
+                    const sender = currentCall.peerConnection.getSenders().find(s => s.track && s.track.kind === 'video');
+                    if (sender) {
+                        sender.replaceTrack(videoTrack);
+                    } else {
+                        // Pokud sender pro video neexistuje, musíme restartovat hovor s videem (omezení WebRTC)
+                        alert("Sdílení obrazovky vyžaduje aktivní spojení. Pokud se video nezobrazí, zkuste sdílet hned po připojení.");
+                    }
+                }
+
+                videoTrack.onended = () => {
+                    document.getElementById('remoteVideo').classList.remove('active');
+                };
+            } catch (err) {
+                console.error(err);
+            }
+        }
+
+        function addParticipant(name) {
+            const list = document.getElementById('participants');
+            const badge = document.createElement('span');
+            badge.className = 'user-badge';
+            badge.innerText = "👤 " + name;
+            list.appendChild(badge);
+        }
+    </script>
+</body>
+</html>
